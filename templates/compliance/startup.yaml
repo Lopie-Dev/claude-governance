@@ -1,0 +1,62 @@
+version: "1.0"
+project: "my-project"
+description: "Minimal governance for startups - essential security without overhead"
+
+# Block secrets and destructive operations
+permissions:
+  filesystem:
+    deny:
+      - path: ".env*"
+        reason: "Secrets must use environment variables or vault"
+      - path: "**/*.pem"
+      - path: "**/*.key"
+
+  commands:
+    deny:
+      - pattern: "rm -rf *"
+        reason: "Use git clean instead"
+      - pattern: "git push --force*"
+        reason: "Force push blocked"
+      - pattern: "curl *"
+        reason: "Use WebFetch tool for auditability"
+
+    allow:
+      - pattern: "git *"
+      - pattern: "npm *"
+      - pattern: "gh *"
+
+# Secret detection
+secrets:
+  policy: "no-inline-secrets"
+  detection:
+    patterns:
+      - pattern: 'AKIA[0-9A-Z]{16}'
+        name: "AWS Access Key"
+      - pattern: 'ghp_[a-zA-Z0-9]{36}'
+        name: "GitHub PAT"
+      - pattern: 'sk-[a-zA-Z0-9_-]{48,}'
+        name: "API Key"
+
+  enforcement:
+    hook: "PreToolUse"
+    action: "block"
+    message: "Secret detected. Use environment variables instead."
+
+# Simple approval gate for production
+approval_gates:
+  - name: "production-deployment"
+    trigger:
+      command_pattern: "git push .* main"
+    action:
+      type: "prompt"
+      prompt: "Deploy to production?"
+
+# Basic audit trail
+audit:
+  enabled: true
+  events:
+    - PreToolUse
+    - PostToolUse
+  destinations:
+    - type: "local"
+      path: ".claude/audit.jsonl"

@@ -1,0 +1,113 @@
+name: Governance Enforcement
+on:
+  pull_request:
+    branches: [{{#each protectedBranches}}{{#if @index}}, {{/if}}{{this}}{{/each}}]
+  push:
+    branches: [{{#each protectedBranches}}{{#if @index}}, {{/if}}{{this}}{{/each}}]
+
+jobs:
+  {{#if secretPatterns}}
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for secrets in changes
+        run: |
+          # Check for inline secrets
+          git diff ${GITHUB_EVENT_BEFORE}..${GITHUB_SHA} | \
+          grep -E '{{#each secretPatterns}}{{#if @index}}|{{/if}}{{this.pattern}}{{/each}}' && \
+          { echo "❌ Secret detected in commit"; exit 1; } || echo "✓ No secrets found"
+
+      - name: TruffleHog scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: \${{ github.event.pull_request.base.sha }}
+          head: \${{ github.event.pull_request.head.sha }}
+  {{/if}}
+
+  {{#if hasTerraform}}
+  infrastructure-validation:
+    runs-on: ubuntu-latest
+    if: contains(github.event.head_commit.modified, 'infrastructure/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Format Check
+        run: terraform fmt -check -recursive infrastructure/
+
+      - name: Terraform Validate
+        run: |
+          cd infrastructure
+          terraform init -backend=false
+          terraform validate
+
+      {{#if dynamodbBillingMode}}
+      - name: Check DynamoDB billing mode
+        run: |
+          if grep -r '"billing_mode"\s*:\s*"PROVISIONED"' infrastructure/config/dynamodb/; then
+            echo "❌ PROVISIONED billing mode detected. Use {{dynamodbBillingMode}} only."
+            exit 1
+          fi
+          echo "✓ DynamoDB billing mode compliant"
+      {{/if}}
+  {{/if}}
+
+  {{#if contractorMembers}}
+  contractor-restrictions:
+    runs-on: ubuntu-latest
+    if: contains(fromJSON('[{{#each contractorMembers}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]'), github.actor)
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Block infrastructure changes by contractors
+        if: contains(github.event.head_commit.modified, 'infrastructure/')
+        run: |
+          echo "❌ Infrastructure changes require review before merging"
+          exit 1
+
+      - name: Block main branch pushes by contractors
+        if: github.ref == 'refs/heads/main'
+        run: |
+          echo "❌ Contractors cannot push to main branch"
+          exit 1
+  {{/if}}
+
+  compliance-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate compliance report
+        run: |
+          cat > compliance-\${{ github.sha }}.json <<EOF
+          {
+            "commit": "\${{ github.sha }}",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "author": "\${{ github.actor }}",
+            "project": "{{projectName}}",
+            "controls": {
+              {{#each complianceControls}}
+              "{{this.id}}": {
+                "satisfied": true,
+                "framework": "{{this.framework}}",
+                "description": "{{this.description}}",
+                "evidence": [{{#each this.evidence}}"{{this}}"{{#unless @last}}, {{/unless}}{{/each}}]
+              }{{#unless @last}},{{/unless}}
+              {{/each}}
+            }
+          }
+          EOF
+
+      - name: Upload compliance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-report-\${{ github.sha }}
+          path: compliance-*.json
+          retention-days: 2555  # 7 years

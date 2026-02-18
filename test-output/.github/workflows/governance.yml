@@ -1,0 +1,55 @@
+name: Governance Enforcement
+on:
+  pull_request:
+    branches: []
+  push:
+    branches: []
+
+jobs:
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Scan for secrets in changes
+        run: |
+          # Check for inline secrets
+          git diff ${GITHUB_EVENT_BEFORE}..${GITHUB_SHA} | \
+          grep -E 'AKIA[0-9A-Z]{16}|ghp_[a-zA-Z0-9]{36}|sk-[a-zA-Z0-9_-]{48,}' && \
+          { echo "❌ Secret detected in commit"; exit 1; } || echo "✓ No secrets found"
+
+      - name: TruffleHog scan
+        uses: trufflesecurity/trufflehog@main
+        with:
+          path: ./
+          base: \$
+          head: \$
+
+
+
+  compliance-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate compliance report
+        run: |
+          cat > compliance-\$.json <<EOF
+          {
+            "commit": "\$",
+            "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+            "author": "\$",
+            "project": "my-project",
+            "controls": {
+            }
+          }
+          EOF
+
+      - name: Upload compliance report
+        uses: actions/upload-artifact@v4
+        with:
+          name: compliance-report-\$
+          path: compliance-*.json
+          retention-days: 2555  # 7 years
